@@ -40,6 +40,28 @@ The provider rejects dates more than 59 calendar days old and does not return
 the current session until both opening bars have completed. Yahoo data availability
 and adjustments still require verification before drawing performance conclusions.
 
+### Recent-window trade outcomes
+
+```bash
+python -m tradingagents.us_swing.window \
+  --symbols NVDA,TSLA,PLTR --days 59 --equity 20000
+```
+
+Supply a **fixed, declared ticker list** so the report does not silently change
+its universe. It downloads each symbol's daily warmup and recent five-minute
+bars, counts Breakout candidates and entry plans, and replays completed trades.
+The window starts no earlier than the provider's 59-day limit. Outcomes use an
+initial stop at the opening low, sell half on the fourth session close, move
+the stop to break even, and sell the remainder at the next open after the
+first close below the 10-day simple moving average. A gap below the stop fills
+at the open. Open trades are excluded from win rate and mean R.
+
+These are **single-symbol diagnostics**. They do not model spread, slippage,
+fees, competing signals, cash use across symbols, or a point-in-time universe.
+The price-only runner excludes Episodic Pivot because contemporaneous catalyst
+records are required. A Yahoo HTTP 429 error is reported as an error, not as
+a zero-signal session or a performance result.
+
 ## Offline CSV alternative
 
 Export point-in-time US equity data into two files:
