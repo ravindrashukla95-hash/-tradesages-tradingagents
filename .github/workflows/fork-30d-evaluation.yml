@@ -30,6 +30,7 @@ jobs:
         run: |
           python - <<'PY'
           import os
+          import time
           from datetime import timedelta
           from pathlib import Path
 
@@ -63,22 +64,39 @@ jobs:
               "memory_log_path": str(output_dir / "memory.md"),
               "max_debate_rounds": 1,
               "max_risk_discuss_rounds": 1,
-              "llm_max_retries": 0,
+              "llm_max_retries": 2,
+              "checkpoint_enabled": True,
               "holding_period_days": 5,
           }
           print(f"Evaluation window: {first_date} to {last_date}; dates: {dates}", flush=True)
-          result = run_backtest(
-              ["AAPL"], dates, config, selected_analysts=("market",),
-              run_id="aapl_30d_pilot",
-          )
+          result = None
+          for attempt in range(3):
+              print(f"Evaluation attempt {attempt + 1}/3", flush=True)
+              result = run_backtest(
+                  ["AAPL"], dates, config, selected_analysts=("market",),
+                  run_id="aapl_30d_pilot",
+              )
+              if result.log_path.is_file():
+                  summary = summarize(result)
+                  if not result.failures and not result.settlement_failures and summary.pending == 0:
+                      break
+              if attempt < 2:
+                  time.sleep(45 * (attempt + 1))
           if not result.log_path.is_file():
               raise SystemExit(f"No decisions completed. Failures: {result.failures}")
-          report = summarize(result).render()
+          summary = summarize(result)
+          report = summary.render()
+          from tradingagents.decision_log import TradingMemoryLog
+          entries = TradingMemoryLog({"memory_log_path": str(result.log_path)}).load_entries()
+          for entry in entries:
+              print(f"Decision: {entry['date']} {entry['ticker']} {entry['rating']}; "
+                    f"alpha: {entry.get('alpha')}; pending: {entry['pending']}", flush=True)
           text = (
               "# Fork decision evaluation, AAPL\n\n"
               f"Window: {first_date} to {last_date}\n\n"
               f"Sampled analysis dates: {', '.join(dates)}\n\n"
-              f"Completed: {result.cells_run}; failed: {len(result.failures)}\n\n"
+              f"Completed: {len(entries)}/{len(dates)}; failed: {len(result.failures)}; "
+              f"pending: {summary.pending}\n\n"
               f"```text\n{report}\n```\n\n"
               "This evaluates ratings versus SPY over five trading days. "
               "It is not an entry/exit trade backtest.\n"
@@ -88,9 +106,10 @@ jobs:
           if summary_path:
               with open(summary_path, "a", encoding="utf-8") as summary:
                   summary.write(text)
-          if result.failures or result.settlement_failures:
+          if result.failures or result.settlement_failures or summary.pending or len(entries) != len(dates):
               raise SystemExit(
                   f"Incomplete evaluation. Cell failures: {result.failures}; "
-                  f"settlement failures: {result.settlement_failures}"
+                  f"settlement failures: {result.settlement_failures}; "
+                  f"pending: {summary.pending}; completed: {len(entries)}/{len(dates)}"
               )
           PY
