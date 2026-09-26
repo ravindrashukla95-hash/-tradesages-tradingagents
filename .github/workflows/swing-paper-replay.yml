@@ -1,0 +1,110 @@
+name: Swing paper replay, recorded signals
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/swing-paper-replay.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install market data dependency
+        run: python -m pip install "yfinance>=1.4.1"
+      - name: Replay recorded fork ratings
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          from datetime import date
+
+          import pandas as pd
+          import yfinance as yf
+
+          # Recorded in fork evaluation run 36263578819. No LLM is called here.
+          signals = [
+              (date(2026, 8, 19), "Overweight"),
+              (date(2026, 9, 2), "Hold"),
+              (date(2026, 9, 17), "Overweight"),
+          ]
+
+          def history(symbol):
+              frame = yf.download(
+                  symbol, start="2026-08-18", end="2026-09-27", interval="1d",
+                  auto_adjust=True, progress=False, threads=False, timeout=20,
+              )
+              if isinstance(frame.columns, pd.MultiIndex):
+                  frame = frame.xs(symbol, axis=1, level=-1)
+              if frame.empty or not {"Open", "Close"}.issubset(frame.columns):
+                  raise SystemExit(f"Missing price history for {symbol}")
+              return frame
+
+          stock, bench = history("AAPL"), history("SPY")
+          sessions = stock.index
+          capital = 10_000.0
+          rows = []
+
+          for signal_day, rating in signals:
+              if rating not in ("Buy", "Overweight"):
+                  print(f"{signal_day} {rating}: no entry")
+                  continue
+              eligible = sessions[sessions.date > signal_day]
+              if len(eligible) < 5:
+                  raise SystemExit(f"Insufficient future sessions for {signal_day}")
+              entry_day, exit_day = eligible[0], eligible[4]
+              if entry_day not in bench.index or exit_day not in bench.index:
+                  raise SystemExit("SPY missing matching benchmark dates")
+              buy = float(stock.at[entry_day, "Open"])
+              sell = float(stock.at[exit_day, "Close"])
+              spy_buy = float(bench.at[entry_day, "Open"])
+              spy_sell = float(bench.at[exit_day, "Close"])
+              if min(buy, sell, spy_buy, spy_sell) <= 0:
+                  raise SystemExit("Invalid OHLC price")
+              trade_return = sell / buy - 1
+              spy_return = spy_sell / spy_buy - 1
+              capital *= 1 + trade_return
+              rows.append((signal_day, entry_day.date(), exit_day.date(), buy, sell,
+                           trade_return, spy_return))
+
+          if len(rows) != 2:
+              raise SystemExit(f"Expected two completed example trades, found {len(rows)}")
+          lines = [
+              "# AAPL experimental paper replay, Aug 19–Sep 24, 2026",
+              "",
+              "Source: [fork evaluation run 36263578819]"
+              "(https://github.com/ravindrashukla95-hash/-tradesages-tradingagents/actions/runs/36263578819).",
+              "",
+              "Pilot rule: Buy/Overweight rating at close → buy next session open; "
+              "sell at close of the fifth held session. Hold makes no entry. "
+              "The five-session exit is added for this experiment; the fork does not place exits.",
+              "Gross adjusted prices; no fees, spread, slippage, sizing constraints, or stop.",
+              "",
+              "| Signal | Entry | Exit | Entry $ | Exit $ | Gross trade | SPY same dates |",
+              "| --- | --- | --- | ---: | ---: | ---: | ---: |",
+          ]
+          for signal_day, entry_day, exit_day, buy, sell, ret, spy in rows:
+              lines.append(
+                  f"| {signal_day} Overweight | {entry_day} | {exit_day} | "
+                  f"{buy:.2f} | {sell:.2f} | {ret:+.2%} | {spy:+.2%} |"
+              )
+          lines.extend([
+              "",
+              f"Two-trade compounded gross return: {capital / 10_000 - 1:+.2%} "
+              f"(${capital - 10_000:+,.2f} on a hypothetical $10,000 fully reinvested).",
+              "This small retrospective sample is not a validated strategy return.",
+          ])
+          report = "\n".join(lines) + "\n"
+          print(report)
+          if os.environ.get("GITHUB_STEP_SUMMARY"):
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as out:
+                  out.write(report)
+          PY
