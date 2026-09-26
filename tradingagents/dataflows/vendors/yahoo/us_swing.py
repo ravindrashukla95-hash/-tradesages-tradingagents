@@ -90,6 +90,58 @@ class YFinanceProvider:
             raise ValueError(f"at least 78 prior daily bars are required for {symbol}")
         return history, opening
 
+    def load_window(
+        self, symbol: str, start: date, end: date
+    ) -> tuple[list[Bar], dict[date, list[OpeningBar]]]:
+        """Fetch a recent research window in two requests, not one per session.
+
+        The daily series includes the warmup period before ``start``. Intraday
+        bars include the regular session so entry-day stops can be replayed.
+        """
+        now = self.clock().astimezone(NY)
+        if not symbol or not symbol.strip() or end < start or end > now.date():
+            raise ValueError("invalid symbol or research window")
+        if start < now.date() - timedelta(days=59):
+            raise ValueError("yfinance five-minute bars are limited to recent sessions (~60 days)")
+        if end == now.date() and now.time() < time(9, 40):
+            raise ValueError("wait until both five-minute opening bars are complete")
+        ticker = self.ticker_factory(symbol)
+        try:
+            daily = ticker.history(
+                start=start - timedelta(days=170),
+                end=end + timedelta(days=1),
+                interval="1d",
+                auto_adjust=False,
+                prepost=False,
+                actions=False,
+                raise_errors=True,
+            )
+            intraday = ticker.history(
+                start=start,
+                end=end + timedelta(days=1),
+                interval="5m",
+                auto_adjust=False,
+                prepost=False,
+                actions=False,
+                raise_errors=True,
+            )
+        except YFRateLimitError as exc:
+            raise VendorRateLimitError("Yahoo Finance rate limited the US swing window") from exc
+        except Exception as exc:
+            raise VendorError(f"Yahoo Finance window failed for {symbol}: {exc}") from exc
+        if daily is None or daily.empty or intraday is None or intraday.empty:
+            raise NoMarketDataError(symbol, detail="daily or five-minute window is empty")
+        daily_bars = [
+            Bar(stamp.date(), *values) for stamp, values in self._rows(daily) if stamp.date() <= end
+        ]
+        openings: dict[date, list[OpeningBar]] = {}
+        for stamp, values in self._rows(intraday, intraday=True):
+            if start <= stamp.date() <= end and time(9, 30) <= stamp.time() < time(16):
+                openings.setdefault(stamp.date(), []).append(
+                    OpeningBar(stamp.to_pydatetime(), *values)
+                )
+        return daily_bars, openings
+
     @staticmethod
     def _rows(frame: pd.DataFrame, intraday: bool = False):
         required = ("Open", "High", "Low", "Close", "Volume")
