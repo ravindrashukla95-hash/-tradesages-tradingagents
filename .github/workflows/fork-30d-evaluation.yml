@@ -104,8 +104,8 @@ jobs:
           print(text, flush=True)
           summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
           if summary_path:
-              with open(summary_path, "a", encoding="utf-8") as summary:
-                  summary.write(text)
+              with open(summary_path, "a", encoding="utf-8") as summary_file:
+                  summary_file.write(text)
           if result.failures or result.settlement_failures or summary.pending or len(entries) != len(dates):
               raise SystemExit(
                   f"Incomplete evaluation. Cell failures: {result.failures}; "
