@@ -1,0 +1,40 @@
+name: Gemini connection check
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install fork
+        run: python -m pip install .
+      - name: Call Gemini through the fork
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+
+          from tradingagents.llm_clients.factory import create_llm_client
+
+          if not os.environ.get("GOOGLE_API_KEY"):
+              raise SystemExit("GOOGLE_API_KEY is missing from repository Actions secrets")
+
+          client = create_llm_client(
+              "google", "gemini-3.1-flash-lite", max_retries=0, timeout=30
+          )
+          response = client.get_llm().invoke("Reply with the word READY.")
+          if not str(response.content).strip():
+              raise SystemExit("Gemini returned an empty response")
+          print("Gemini connection check passed")
+          PY
