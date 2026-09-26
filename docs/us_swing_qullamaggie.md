@@ -1,7 +1,8 @@
 # TradeSages US Swing: Qullamaggie research v1
 
 This module builds deterministic, long-only **Breakout** and **Episodic Pivot**
-screens and a five-minute opening-range trade plan. It is an initial research
+screens and a five-minute opening-range trade plan. Testing uses **yfinance**
+by default; ThetaData is reserved for the final data integration. It is an initial research
 implementation. It does not submit orders, forecast win rate, or claim to
 reproduce all of Kristjan Kullamägi's discretionary decisions.
 
@@ -21,7 +22,25 @@ five-minute choice, account risk and position cap are **TradeSages hypotheses**.
 The author describes alternatives, including one-minute or later opening ranges.
 All thresholds are configurable via `SetupConfig`.
 
-## Offline example
+## Test with yfinance
+
+```bash
+python -m tradingagents.us_swing.scan \
+  --symbol NVDA --session 2026-09-25 --equity 20000 \
+  --catalyst 'earnings release known before 09:30 ET'
+```
+
+The scanner fetches daily history and the 09:30/09:35 ET five-minute bars.
+The EP catalyst remains a contemporaneous, manually supplied fact; Yahoo price
+data alone cannot establish whether a gap was caused by a qualifying surprise.
+If no valid candidate exists, `setups` is empty. This command is for *recent
+completed sessions only*. yfinance documents a roughly 60-day intraday history
+limit: https://ranaroussi.github.io/yfinance/reference/api/yfinance.download.html .
+The provider rejects dates more than 59 calendar days old and does not return
+the current session until both opening bars have completed. Yahoo data availability
+and adjustments still require verification before drawing performance conclusions.
+
+## Offline CSV alternative
 
 Export point-in-time US equity data into two files:
 
@@ -37,24 +56,26 @@ also requires a point-in-time universe with delisted stocks, contemporaneous
 news/earnings timestamps, and modeled spread/slippage/corporate actions.
 
 ```bash
-python -m tradingagents.us_swing.scan \
+python -m tradingagents.us_swing.scan --provider csv \
   --daily daily.csv --intraday bars.csv --symbol NVDA \
   --session 2026-09-25 --equity 20000 \
   --catalyst 'earnings release known before 09:30 ET'
 ```
 
-The output is a JSON array of candidates and optional trade plans. A null plan
+The output contains a provider name and an array of candidates and optional trade plans. A null plan
 means the trigger, stop-distance, or sizing conditions failed. The CLI accepts
 an operator-provided catalyst; it does not infer the catalyst from future news.
 
 ## Build sequence
 
 1. **Done:** deterministic candidates, opening-range plan, explicit data contract.
-2. Next: ThetaData adapter for historical US equities and minute bars; validate
-   feed permissions and adjusted-price consistency. Credentials stay outside git.
-3. Next: timestamped earnings/news source, full order and portfolio simulation,
-   realistic fill/cost model, delisted universe, walk-forward and regime splits.
-4. Only after research: paper execution, daily risk controls and review of live
+2. Next: test the universe and strategy logic with yfinance's recent daily and
+   five-minute bars. Add timestamped earnings/news and an order/portfolio
+   simulation with realistic fills, costs, delisted symbols and regime splits.
+3. Final data integration: ThetaData adapter for historical US equities and
+   minute bars, with feed permissions and adjusted-price consistency checked.
+   Credentials stay outside git.
+4. After research: paper execution, daily risk controls and review of live
    versus simulated fills. TradingAgents analysts may add context but cannot
    override deterministic sizing/risk checks.
 
