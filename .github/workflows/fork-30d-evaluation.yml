@@ -1,0 +1,96 @@
+name: Fork 30-day decision evaluation
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/fork-30d-evaluation.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      TRADINGAGENTS_LLM_PROVIDER: google
+      TRADINGAGENTS_QUICK_THINK_LLM: gemini-3.1-flash-lite
+      TRADINGAGENTS_DEEP_THINK_LLM: gemini-3.1-flash-lite
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install fork
+        run: python -m pip install .
+      - name: Evaluate AAPL decisions across 30 days
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          from datetime import timedelta
+          from pathlib import Path
+
+          import yfinance as yf
+
+          if not os.environ.get("GOOGLE_API_KEY"):
+              raise SystemExit("GOOGLE_API_KEY is missing")
+
+          prices = yf.download(
+              "AAPL", period="3mo", interval="1d", auto_adjust=True,
+              progress=False, threads=False, timeout=20,
+          )
+          if len(prices) < 40:
+              raise SystemExit("Insufficient AAPL history")
+          # Leave five completed trading days to settle the last decision.
+          last_date = prices.index[-6].date()
+          first_date = last_date - timedelta(days=30)
+          in_window = [d.date() for d in prices.index if first_date <= d.date() <= last_date]
+          # Sample one decision every ten trading days to fit the free API tier.
+          dates = [d.isoformat() for d in in_window[::10]]
+          if len(dates) < 2:
+              raise SystemExit("Not enough trading dates in the evaluation window")
+
+          from tradingagents.backtest import run_backtest, summarize
+          from tradingagents.default_config import DEFAULT_CONFIG
+
+          output_dir = Path("results/fork-30d-evaluation").resolve()
+          config = {
+              **DEFAULT_CONFIG,
+              "results_dir": str(output_dir),
+              "memory_log_path": str(output_dir / "memory.md"),
+              "max_debate_rounds": 1,
+              "max_risk_discuss_rounds": 1,
+              "llm_max_retries": 0,
+              "holding_period_days": 5,
+          }
+          print(f"Evaluation window: {first_date} to {last_date}; dates: {dates}", flush=True)
+          result = run_backtest(
+              ["AAPL"], dates, config, selected_analysts=("market",),
+              run_id="aapl_30d_pilot",
+          )
+          if not result.log_path.is_file():
+              raise SystemExit(f"No decisions completed. Failures: {result.failures}")
+          report = summarize(result).render()
+          text = (
+              "# Fork decision evaluation, AAPL\n\n"
+              f"Window: {first_date} to {last_date}\n\n"
+              f"Sampled analysis dates: {', '.join(dates)}\n\n"
+              f"Completed: {result.cells_run}; failed: {len(result.failures)}\n\n"
+              f"```text\n{report}\n```\n\n"
+              "This evaluates ratings versus SPY over five trading days. "
+              "It is not an entry/exit trade backtest.\n"
+          )
+          print(text, flush=True)
+          summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary_path:
+              with open(summary_path, "a", encoding="utf-8") as summary:
+                  summary.write(text)
+          if result.failures or result.settlement_failures:
+              raise SystemExit(
+                  f"Incomplete evaluation. Cell failures: {result.failures}; "
+                  f"settlement failures: {result.settlement_failures}"
+              )
+          PY
