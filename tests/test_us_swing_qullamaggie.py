@@ -184,6 +184,12 @@ def test_yfinance_provider_is_point_in_time_and_excludes_premarket():
     assert [bar.time.hour * 60 + bar.time.minute for bar in opening] == [570, 575]
     assert all(bar.day < SESSION for bar in earlier)
 
+    window_daily, window_bars = provider.load_window(
+        "TEST", date(2026, 9, 20), SESSION
+    )
+    assert window_daily[-1].day == SESSION
+    assert len(window_bars[SESSION]) == 2
+
     with pytest.raises(ValueError, match="recent sessions"):
         provider.load("TEST", date(2026, 7, 1))
 
