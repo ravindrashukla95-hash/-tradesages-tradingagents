@@ -2,8 +2,10 @@ import json
 import sys
 from datetime import date, datetime, timedelta, timezone
 
+import pandas as pd
 import pytest
 
+from tradingagents.dataflows.vendors.yahoo.us_swing import YFinanceProvider
 from tradingagents.us_swing.qullamaggie import (
     Bar,
     Candidate,
@@ -124,6 +126,8 @@ def test_csv_scanner_handles_premarket_and_future_daily_rows(tmp_path, monkeypat
         "argv",
         [
             "scan",
+            "--provider",
+            "csv",
             "--daily",
             str(daily),
             "--intraday",
@@ -139,6 +143,77 @@ def test_csv_scanner_handles_premarket_and_future_daily_rows(tmp_path, monkeypat
         ],
     )
     main()
-    results = json.loads(capsys.readouterr().out)
-    assert {result["candidate"]["setup"] for result in results} == {"BREAKOUT", "EP"}
-    assert results[0]["plan"]["shares"] == 25
+    result = json.loads(capsys.readouterr().out)
+    assert result["provider"] == "csv"
+    assert {item["candidate"]["setup"] for item in result["setups"]} == {"BREAKOUT", "EP"}
+    assert result["setups"][0]["plan"]["shares"] == 25
+
+
+def test_yfinance_provider_is_point_in_time_and_excludes_premarket():
+    bars = history()
+    daily = pd.DataFrame(
+        [(b.open, b.high, b.low, b.close, b.volume) for b in bars]
+        + [(999, 1000, 998, 999, 100_000)],
+        columns=["Open", "High", "Low", "Close", "Volume"],
+        index=pd.to_datetime([b.day for b in bars] + [SESSION]),
+    )
+    intraday = pd.DataFrame(
+        [(151, 152, 150, 151, 1000), (154, 156, 153, 155, 12_000), (155, 157, 154, 157, 12_000)],
+        columns=["Open", "High", "Low", "Close", "Volume"],
+        index=pd.DatetimeIndex(
+            [
+                datetime(2026, 9, 25, 9, 25, tzinfo=ET),
+                datetime(2026, 9, 25, 9, 30, tzinfo=ET),
+                datetime(2026, 9, 25, 9, 35, tzinfo=ET),
+            ]
+        ),
+    )
+
+    class FakeTicker:
+        def history(self, **kwargs):
+            assert kwargs["auto_adjust"] is False
+            assert kwargs["prepost"] is False
+            return daily if kwargs["interval"] == "1d" else intraday
+
+    provider = YFinanceProvider(
+        ticker_factory=lambda symbol: FakeTicker(),
+        clock=lambda: datetime(2026, 9, 26, 12, tzinfo=ET),
+    )
+    earlier, opening = provider.load("TEST", SESSION)
+    assert len(earlier) == len(bars)
+    assert [bar.time.hour * 60 + bar.time.minute for bar in opening] == [570, 575]
+    assert all(bar.day < SESSION for bar in earlier)
+
+    with pytest.raises(ValueError, match="recent sessions"):
+        provider.load("TEST", date(2026, 7, 1))
+
+
+def test_scanner_defaults_to_yfinance_without_csv(tmp_path, monkeypatch, capsys):
+    class FakeProvider:
+        def load(self, symbol, session):
+            assert symbol == "TEST" and session == SESSION
+            return history(), [
+                minute(0, 154, 156, 153, 155),
+                minute(1, 155, 157, 154, 157),
+            ]
+
+    monkeypatch.setattr("tradingagents.us_swing.scan.YFinanceProvider", FakeProvider)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "scan",
+            "--symbol",
+            "TEST",
+            "--session",
+            str(SESSION),
+            "--equity",
+            "20000",
+            "--catalyst",
+            "earnings",
+        ],
+    )
+    main()
+    result = json.loads(capsys.readouterr().out)
+    assert result["provider"] == "yfinance"
+    assert len(result["setups"]) == 2
