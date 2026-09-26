@@ -1,0 +1,63 @@
+name: Swing agent pilot
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      TRADINGAGENTS_LLM_PROVIDER: google
+      TRADINGAGENTS_QUICK_THINK_LLM: gemini-3.1-flash-lite
+      TRADINGAGENTS_DEEP_THINK_LLM: gemini-3.1-flash-lite
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install fork
+        run: python -m pip install .
+      - name: Run one historical agent decision
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+
+          import yfinance as yf
+
+          if not os.environ.get("GOOGLE_API_KEY"):
+              raise SystemExit("GOOGLE_API_KEY is missing from Actions secrets")
+
+          history = yf.download(
+              "AAPL", period="3mo", interval="1d", auto_adjust=True,
+              progress=False, threads=False, timeout=20,
+          )
+          if len(history) < 25:
+              raise SystemExit("Insufficient AAPL history for historical analysis")
+          analysis_date = history.index[-10].date().isoformat()
+
+          from tradingagents.agents.rating import is_review
+          from tradingagents.default_config import DEFAULT_CONFIG
+          from tradingagents.graph.trading_graph import TradingAgentsGraph
+
+          config = {
+              **DEFAULT_CONFIG,
+              "results_dir": str(Path("results/swing-agent-pilot").resolve()),
+              "memory_log_path": str(Path("results/swing-agent-pilot/memory.md").resolve()),
+              "max_debate_rounds": 1,
+              "max_risk_discuss_rounds": 1,
+              "llm_max_retries": 0,
+          }
+          graph = TradingAgentsGraph(selected_analysts=("market",), config=config)
+          _, rating = graph.propagate("AAPL", analysis_date)
+          if is_review(rating):
+              raise SystemExit("Agent decision needs review; no trade signal")
+          print(f"Historical AAPL analysis on {analysis_date}: {rating}")
+          print("This is a rating, not a filled entry or exit")
+          PY
