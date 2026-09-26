@@ -1,0 +1,46 @@
+name: Yahoo Finance data check
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install fork and yfinance
+        run: python -m pip install .
+      - name: Check daily price history
+        shell: bash
+        run: |
+          python - <<'PY'
+          import yfinance as yf
+
+          failed = []
+          for symbol in ("AAPL", "NVDA", "SPY"):
+              prices = yf.download(
+                  symbol,
+                  period="6mo",
+                  interval="1d",
+                  auto_adjust=True,
+                  progress=False,
+                  threads=False,
+                  timeout=20,
+              )
+              count = len(prices)
+              last = str(prices.index[-1].date()) if count else "none"
+              print(f"{symbol}: {count} daily bars; last date: {last}", flush=True)
+              if count < 65:
+                  failed.append(symbol)
+
+          if failed:
+              raise SystemExit(f"Insufficient Yahoo Finance history: {', '.join(failed)}")
+          print("Yahoo Finance data check passed")
+          PY
